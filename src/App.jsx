@@ -149,6 +149,43 @@ export default function App() {
           <ResponseTimeChart data={data ? data.trend : []} />
         </div>
       </div>
+
+      <p className="section-label">D365 → IDIT pipeline</p>
+      <div className="kpi-grid kpi-grid-narrow">
+        <KpiCard
+          label="Active messages"
+          value={data && data.serviceBus && data.serviceBus.activeMessages !== null ? Math.round(data.serviceBus.activeMessages) : '—'}
+          tone="neutral"
+          footnote="idit-sync subscription"
+        />
+        <KpiCard
+          label="DLQ depth"
+          value={data && data.serviceBus && data.serviceBus.dlqDepth !== null ? Math.round(data.serviceBus.dlqDepth) : '—'}
+          tone={data && data.serviceBus && data.serviceBus.dlqDepth > 0 ? 'warn' : 'ok'}
+          footnote="Dead-lettered messages"
+        />
+        <KpiCard
+          label="EntitySync total"
+          value={data && data.entitySync ? data.entitySync.total : '—'}
+          tone="neutral"
+          footnote={data && data.entitySync ? `${data.entitySync.failures} failed` : ''}
+        />
+        <KpiCard
+          label="4XX / schema errors"
+          value={data && data.entitySync ? data.entitySync.by4xx + data.entitySync.bySchemaInvalid : '—'}
+          tone={data && data.entitySync && (data.entitySync.by4xx + data.entitySync.bySchemaInvalid) > 0 ? 'warn' : 'ok'}
+          footnote="Bad payload, dead-lettered"
+        />
+        <KpiCard
+          label="5XX exhausted"
+          value={data && data.entitySync ? data.entitySync.by5xxExhausted : '—'}
+          tone={data && data.entitySync && data.entitySync.by5xxExhausted > 0 ? 'bad' : 'ok'}
+          footnote="Retries used, still failing"
+        />
+      </div>
+      {data && data.serviceBus && data.serviceBus.error ? (
+        <p className="sb-note">Service Bus metrics unavailable: {data.serviceBus.error}</p>
+      ) : null}
     </div>
   );
 }
