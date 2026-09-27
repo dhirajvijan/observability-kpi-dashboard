@@ -163,6 +163,26 @@ a { color: var(--teal); }
   margin-top: 8px;
 }
 
+.section-label {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin: 28px 0 12px;
+}
+
+.kpi-grid-narrow .kpi-value {
+  font-size: 26px;
+}
+
+.sb-note {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--amber);
+  margin-top: 10px;
+}
+
 .chart-grid {
   display: grid;
   grid-template-columns: 1.4fr 1fr;
