@@ -172,6 +172,12 @@ a { color: var(--teal); }
   margin: 28px 0 12px;
 }
 
+.kpi-grid-breakdown {
+  grid-template-columns: repeat(2, 1fr);
+  max-width: 420px;
+  margin-top: -8px;
+}
+
 .kpi-grid-narrow .kpi-value {
   font-size: 26px;
 }
