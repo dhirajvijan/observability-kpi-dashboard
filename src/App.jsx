@@ -28,6 +28,187 @@ function overallStatus(data) {
   return { tone: 'ok', label: 'All systems healthy' };
 }
 
+// ---------------------------------------------------------------------------
+// "Ask the agent" panel
+// The Azure Copilot Observability Agent is used on demand only: nothing runs
+// in the background. The Console gives a free first-level triage from data it
+// already has, prepares narrow questions from the live numbers, and opens the
+// Application Insights Failures page, where the agent chat is started by hand.
+// ---------------------------------------------------------------------------
+const APP_INSIGHTS_RESOURCE_ID =
+  '/subscriptions/6b8cf597-b179-46e4-af0d-d3a7676f940f/resourceGroups/dvv-observability-poc/providers/microsoft.insights/components/Obs-poc-FuncApp';
+
+const WINDOW_TEXT = { '1h': 'the last hour', '6h': 'the last 6 hours', '24h': 'the last 24 hours' };
+const WINDOW_MS = { '1h': 3600000, '6h': 21600000, '24h': 86400000 };
+
+// Same address format the portal's own "Copy link" button produces for the
+// Failures page, with the time range set to the window selected in the Console.
+function failuresPageUrl(windowSize) {
+  const now = new Date();
+  const end = new Date(now);
+  end.setSeconds(0, 0);
+  const inputs = {
+    filters: [],
+    timeContext: {
+      durationMs: WINDOW_MS[windowSize] || WINDOW_MS['1h'],
+      createdTime: now.toISOString(),
+      endTime: end.toISOString(),
+    },
+    selectedOperation: null,
+    experience: 1,
+    roleSelectors: [],
+    clientTypeMode: 'Server',
+  };
+  return (
+    'https://portal.azure.com/#blade/AppInsightsExtension/BladeRedirect/BladeName/failures/ResourceId/' +
+    encodeURIComponent(encodeURIComponent(APP_INSIGHTS_RESOURCE_ID)) +
+    '/BladeInputs/' +
+    encodeURIComponent(JSON.stringify(inputs))
+  );
+}
+
+function clock(iso) {
+  return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+// Free triage: plain statements worked out from the numbers already on screen.
+function buildTriage(data) {
+  const t = data.totals || {};
+  const failures = t.failures || 0;
+  const requests = t.requests || 0;
+  const by4xx = t.by4xx || 0;
+  const by5xx = t.by5xx || 0;
+  const lines = [];
+
+  if (requests === 0) return ['No messages were processed in this window.'];
+  if (failures === 0) return [`All ${requests} delivery attempts succeeded in this window. Nothing to investigate.`];
+
+  lines.push(`${failures} of ${requests} delivery attempts failed (${data.failureRatePct}%).`);
+
+  if (by4xx > 0 && by5xx > 0) {
+    lines.push(`${by4xx} were 4XX (payload rejected) and ${by5xx} were 5XX (downstream still failing after retries).`);
+  } else if (by4xx > 0) {
+    lines.push(`All ${by4xx} classified failures were 4XX: the payload was rejected, so retrying the same message will not help.`);
+  } else if (by5xx > 0) {
+    lines.push(`All ${by5xx} classified failures were 5XX: the downstream API kept failing after retries, so these may succeed if replayed later.`);
+  }
+  const other = failures - by4xx - by5xx;
+  if (other > 0) lines.push(`${other} had another cause, for example a network error.`);
+
+  const failing = (data.trend || []).filter((p) => (p.by4xx || 0) + (p.by5xx || 0) + 0 > 0 || (p.failures || 0) > 0);
+  if (failing.length === 1) {
+    lines.push(`Failures appear in the interval starting ${clock(failing[0].time)}.`);
+  } else if (failing.length > 1) {
+    lines.push(`Failures appear between ${clock(failing[0].time)} and ${clock(failing[failing.length - 1].time)}.`);
+  }
+
+  const dlq = data.serviceBus && data.serviceBus.dlqDepth;
+  if (dlq > 0) lines.push(`${Math.round(dlq)} message${Math.round(dlq) === 1 ? ' is' : 's are'} parked in the dead-letter queue.`);
+
+  lines.push('A failed message is retried up to 3 times, so one bad message can count as 3 failures.');
+  return lines;
+}
+
+// Narrow, ready-made questions for the agent, built from the live numbers.
+function buildQuestions(data, windowSize) {
+  const when = WINDOW_TEXT[windowSize] || 'the last hour';
+  const t = (data && data.totals) || {};
+  const sameMessage = ' Treat failures that share a correlationId as one message retried, not as separate failures.';
+  const questions = [];
+
+  if ((t.by5xx || 0) > 0) {
+    questions.push({
+      label: 'Why the 5XX errors?',
+      text: `In ${when}, why did ServiceBusTopicTrigger1 fail with errorCode IDIT_5XX_EXHAUSTED in the EntitySyncFunction_FAILED log messages? When did it start and stop?` + sameMessage,
+    });
+  }
+  if ((t.by4xx || 0) > 0) {
+    questions.push({
+      label: 'Which messages were rejected?',
+      text: `In ${when}, which messages failed with errorCode IDIT_4XX or SCHEMA_INVALID in the EntitySyncFunction_FAILED log messages? List their correlationIds and what the log says was wrong.` + sameMessage,
+    });
+  }
+  if (data && data.p95ResponseTimeMs >= 5000) {
+    questions.push({
+      label: 'Why is it slow?',
+      text: `In ${when}, why did the duration of ServiceBusTopicTrigger1 rise? Compare the durationMs of EntitySyncFunction_COMPLETED and EntitySyncFunction_FAILED log messages, grouped by errorCode.`,
+    });
+  }
+  questions.push({
+    label: 'Health summary',
+    text: `Summarize the health of ServiceBusTopicTrigger1 over ${when}: how many executions succeeded and failed, the failures grouped by errorCode from the EntitySyncFunction_FAILED log messages, and the typical duration.` + sameMessage,
+  });
+  questions.push({
+    label: 'Did something change?',
+    text: 'What changed on the Obs-poc-FuncApp Function App in the last 24 hours (app settings, function code, restarts), and did failures in ServiceBusTopicTrigger1 start after any of those changes?',
+  });
+  return questions;
+}
+
+export function AgentPanel({ data, windowSize }) {
+  const [copied, setCopied] = useState(null);
+
+  if (!data) return null;
+
+  const triage = buildTriage(data);
+  const questions = buildQuestions(data, windowSize);
+
+  const copy = async (text, index) => {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch (e) {
+      // Older browsers or blocked clipboard: fall back to a hidden text area.
+      const area = document.createElement('textarea');
+      area.value = text;
+      document.body.appendChild(area);
+      area.select();
+      document.execCommand('copy');
+      document.body.removeChild(area);
+    }
+    setCopied(index);
+    setTimeout(() => setCopied(null), 2000);
+  };
+
+  return (
+    <div className="agent-panel">
+      <div className="agent-col">
+        <h3>What the Console already knows</h3>
+        <p className="chart-sub">Free, from the numbers on this page</p>
+        <ul className="agent-triage">
+          {triage.map((line, i) => (
+            <li key={i}>{line}</li>
+          ))}
+        </ul>
+      </div>
+
+      <div className="agent-col">
+        <h3>Questions for the Observability Agent</h3>
+        <p className="chart-sub">Runs only when you ask. Each question is billed.</p>
+        <ul className="agent-questions">
+          {questions.map((q, i) => (
+            <li key={q.label}>
+              <div className="agent-question-text">
+                <span className="agent-question-label">{q.label}</span>
+                {q.text}
+              </div>
+              <button className="agent-copy" onClick={() => copy(q.text, i)}>
+                {copied === i ? 'Copied' : 'Copy'}
+              </button>
+            </li>
+          ))}
+        </ul>
+        <a className="agent-open" href={failuresPageUrl(windowSize)} target="_blank" rel="noopener noreferrer">
+          Open the agent in Azure
+        </a>
+        <p className="agent-hint">
+          Copy a question, open the Failures page, then choose Observability Agent and "Chat with the agent" and
+          paste it. Chat is the cheaper option; a deep investigation costs more.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
@@ -166,6 +347,9 @@ export default function App() {
       {data && data.serviceBus && data.serviceBus.error ? (
         <p className="sb-note">Service Bus metrics unavailable: {data.serviceBus.error}</p>
       ) : null}
+
+      <p className="section-label">Ask the agent</p>
+      <AgentPanel data={data} windowSize={windowSize} />
 
       <p className="retired-note">
         The original demo proxy pipeline (direct HTTP → Logic App, no Service Bus) has been retired —
