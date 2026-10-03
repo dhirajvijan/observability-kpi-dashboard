@@ -10,11 +10,17 @@ export default function RequestTrendChart({ data }) {
     return <div className="empty-state">No request data in this window yet</div>;
   }
 
-  const chartData = data.map((d) => ({
-    time: formatTime(d.time),
-    success: Math.max((d.total || 0) - (d.failures || 0), 0),
-    failures: d.failures || 0,
-  }));
+  // Falls back to the old binary failures count if a given point predates
+  // the 4xx/5xx split (e.g. cached data from before this was added) --
+  // in that case the whole bucket is shown as "5xx" so nothing silently
+  // disappears from the chart.
+  const chartData = data.map((d) => {
+    const total = d.total || 0;
+    const by4xx = d.by4xx !== undefined ? d.by4xx : 0;
+    const by5xx = d.by5xx !== undefined ? d.by5xx : (d.failures || 0);
+    const success = Math.max(total - by4xx - by5xx, 0);
+    return { time: formatTime(d.time), success, by4xx, by5xx };
+  });
 
   return (
     <>
@@ -25,7 +31,11 @@ export default function RequestTrendChart({ data }) {
               <stop offset="0%" stopColor="#5EEAD4" stopOpacity={0.5} />
               <stop offset="100%" stopColor="#5EEAD4" stopOpacity={0.02} />
             </linearGradient>
-            <linearGradient id="failFill" x1="0" y1="0" x2="0" y2="1">
+            <linearGradient id="fill4xx" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="#F5A623" stopOpacity={0.6} />
+              <stop offset="100%" stopColor="#F5A623" stopOpacity={0.05} />
+            </linearGradient>
+            <linearGradient id="fill5xx" x1="0" y1="0" x2="0" y2="1">
               <stop offset="0%" stopColor="#E5484D" stopOpacity={0.6} />
               <stop offset="100%" stopColor="#E5484D" stopOpacity={0.05} />
             </linearGradient>
@@ -37,13 +47,15 @@ export default function RequestTrendChart({ data }) {
             contentStyle={{ background: '#212D3A', border: '1px solid #2B3947', borderRadius: 8, fontFamily: 'IBM Plex Mono', fontSize: 12 }}
             labelStyle={{ color: '#8B98A5' }}
           />
-          <Area type="monotone" dataKey="success" stackId="1" stroke="#5EEAD4" fill="url(#successFill)" strokeWidth={1.5} />
-          <Area type="monotone" dataKey="failures" stackId="1" stroke="#E5484D" fill="url(#failFill)" strokeWidth={1.5} />
+          <Area type="monotone" dataKey="success" stackId="1" stroke="#5EEAD4" fill="url(#successFill)" strokeWidth={1.5} name="Successful" />
+          <Area type="monotone" dataKey="by4xx" stackId="1" stroke="#F5A623" fill="url(#fill4xx)" strokeWidth={1.5} name="4XX" />
+          <Area type="monotone" dataKey="by5xx" stackId="1" stroke="#E5484D" fill="url(#fill5xx)" strokeWidth={1.5} name="5XX" />
         </AreaChart>
       </ResponsiveContainer>
       <div className="legend-row">
         <span><span className="legend-swatch" style={{ background: '#5EEAD4' }} />Successful</span>
-        <span><span className="legend-swatch" style={{ background: '#E5484D' }} />Failed</span>
+        <span><span className="legend-swatch" style={{ background: '#F5A623' }} />4XX</span>
+        <span><span className="legend-swatch" style={{ background: '#E5484D' }} />5XX</span>
       </div>
     </>
   );
