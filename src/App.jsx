@@ -19,19 +19,12 @@ function toneForFailureRate(pct) {
   return 'ok';
 }
 
-function toneForAvailability(pct) {
-  if (pct === null || pct === undefined) return 'neutral';
-  if (pct < 95) return 'bad';
-  if (pct < 99) return 'warn';
-  return 'ok';
-}
-
 function overallStatus(data) {
   if (!data) return { tone: 'neutral', label: 'Connecting…' };
   const failTone = toneForFailureRate(data.failureRatePct);
-  const availTone = toneForAvailability(data.availabilityPct);
-  if (failTone === 'bad' || availTone === 'bad') return { tone: 'bad', label: 'Degraded' };
-  if (failTone === 'warn' || availTone === 'warn') return { tone: 'warn', label: 'Elevated failures' };
+  const dlqTone = data.serviceBus && data.serviceBus.dlqDepth > 0 ? 'bad' : 'ok';
+  if (failTone === 'bad' || dlqTone === 'bad') return { tone: 'bad', label: 'Degraded' };
+  if (failTone === 'warn') return { tone: 'warn', label: 'Elevated failures' };
   return { tone: 'ok', label: 'All systems healthy' };
 }
 
@@ -67,7 +60,7 @@ export default function App() {
       <div className="console-header">
         <div>
           <p className="console-title">Reliability Console</p>
-          <p className="console-sub">Live signals from the Function App and Logic App proxy chain</p>
+          <p className="console-sub">D365 → IDIT pipeline: Service Bus → Function App → Logic App</p>
         </div>
         <div className="console-meta">
           {lastFetched ? `Updated ${lastFetched.toLocaleTimeString()}` : 'Waiting for first fetch…'}
@@ -105,14 +98,26 @@ export default function App() {
           value={data ? data.successRatePct : '—'}
           unit={data ? '%' : ''}
           tone={data ? (data.successRatePct >= 97 ? 'ok' : data.successRatePct >= 90 ? 'warn' : 'bad') : 'neutral'}
-          footnote={data ? `${data.totals.requests - data.totals.failures} of ${data.totals.requests} requests` : ''}
+          footnote={data ? `${data.totals.requests - data.totals.failures} of ${data.totals.requests} messages` : ''}
         />
         <KpiCard
           label="Failure rate"
           value={data ? data.failureRatePct : '—'}
           unit={data ? '%' : ''}
           tone={data ? toneForFailureRate(data.failureRatePct) : 'neutral'}
-          footnote={data ? `${data.totals.failures} failed requests` : ''}
+          footnote={data ? `${data.totals.failures} failed` : ''}
+        />
+        <KpiCard
+          label="4XX errors"
+          value={data ? data.totals.by4xx : '—'}
+          tone={data && data.totals.by4xx > 0 ? 'warn' : 'ok'}
+          footnote="Bad payload, dead-lettered"
+        />
+        <KpiCard
+          label="5XX errors"
+          value={data ? data.totals.by5xx : '—'}
+          tone={data && data.totals.by5xx > 0 ? 'bad' : 'ok'}
+          footnote="Retries exhausted"
         />
         <KpiCard
           label="Avg response time"
@@ -121,41 +126,12 @@ export default function App() {
           tone="neutral"
           footnote={data ? `p95: ${data.p95ResponseTimeMs} ms` : ''}
         />
-        <KpiCard
-          label="Availability"
-          value={data && data.availabilityPct !== null ? data.availabilityPct : '—'}
-          unit={data && data.availabilityPct !== null ? '%' : ''}
-          tone={data ? toneForAvailability(data.availabilityPct) : 'neutral'}
-          footnote={data ? `${data.availabilityChecks} checks in window` : ''}
-        />
-        <KpiCard
-          label="CPU utilization"
-          value={data && data.cpuUtilizationPct !== null && data.cpuUtilizationPct !== undefined ? data.cpuUtilizationPct : '—'}
-          unit={data && data.cpuUtilizationPct !== null && data.cpuUtilizationPct !== undefined ? '%' : ''}
-          tone={data && data.cpuUtilizationPct >= 80 ? 'warn' : 'neutral'}
-          footnote="Function App process"
-        />
-      </div>
-
-      <div className="kpi-grid kpi-grid-narrow kpi-grid-breakdown">
-        <KpiCard
-          label="4XX errors"
-          value={data ? data.totals.by4xx : '—'}
-          tone={data && data.totals.by4xx > 0 ? 'warn' : 'ok'}
-          footnote="Client-side / bad request"
-        />
-        <KpiCard
-          label="5XX errors"
-          value={data ? data.totals.by5xx : '—'}
-          tone={data && data.totals.by5xx > 0 ? 'bad' : 'ok'}
-          footnote="Server-side / downstream failure"
-        />
       </div>
 
       <div className="chart-grid">
         <div className="chart-panel">
-          <h3>Requests over time</h3>
-          <p className="chart-sub">Successful vs failed, stacked</p>
+          <h3>Messages over time</h3>
+          <p className="chart-sub">Successful vs 4XX vs 5XX, stacked</p>
           <RequestTrendChart data={data ? data.trend : []} />
         </div>
         <div className="chart-panel">
@@ -165,7 +141,7 @@ export default function App() {
         </div>
       </div>
 
-      <p className="section-label">D365 → IDIT pipeline</p>
+      <p className="section-label">Service Bus</p>
       <div className="kpi-grid kpi-grid-narrow">
         <KpiCard
           label="Active messages"
@@ -177,30 +153,25 @@ export default function App() {
           label="DLQ depth"
           value={data && data.serviceBus && data.serviceBus.dlqDepth !== null ? Math.round(data.serviceBus.dlqDepth) : '—'}
           tone={data && data.serviceBus && data.serviceBus.dlqDepth > 0 ? 'warn' : 'ok'}
-          footnote="Dead-lettered messages"
+          footnote="Dead-lettered messages, parked for review"
         />
         <KpiCard
-          label="EntitySync total"
-          value={data && data.entitySync ? data.entitySync.total : '—'}
-          tone="neutral"
-          footnote={data && data.entitySync ? `${data.entitySync.failures} failed` : ''}
-        />
-        <KpiCard
-          label="4XX / schema errors"
-          value={data && data.entitySync ? data.entitySync.by4xx + data.entitySync.bySchemaInvalid : '—'}
-          tone={data && data.entitySync && (data.entitySync.by4xx + data.entitySync.bySchemaInvalid) > 0 ? 'warn' : 'ok'}
-          footnote="Bad payload, dead-lettered"
-        />
-        <KpiCard
-          label="5XX exhausted"
-          value={data && data.entitySync ? data.entitySync.by5xxExhausted : '—'}
-          tone={data && data.entitySync && data.entitySync.by5xxExhausted > 0 ? 'bad' : 'ok'}
-          footnote="Retries used, still failing"
+          label="CPU utilization"
+          value={data && data.cpuUtilizationPct !== null && data.cpuUtilizationPct !== undefined ? data.cpuUtilizationPct : '—'}
+          unit={data && data.cpuUtilizationPct !== null && data.cpuUtilizationPct !== undefined ? '%' : ''}
+          tone={data && data.cpuUtilizationPct >= 80 ? 'warn' : 'neutral'}
+          footnote="Function App process"
         />
       </div>
       {data && data.serviceBus && data.serviceBus.error ? (
         <p className="sb-note">Service Bus metrics unavailable: {data.serviceBus.error}</p>
       ) : null}
+
+      <p className="retired-note">
+        The original demo proxy pipeline (direct HTTP → Logic App, no Service Bus) has been retired —
+        it didn't reflect the real D365 → IDIT integration pattern. This Console now reports only the
+        Service Bus-based pipeline shown above.
+      </p>
     </div>
   );
 }
