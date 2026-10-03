@@ -137,6 +137,21 @@ export default function App() {
         />
       </div>
 
+      <div className="kpi-grid kpi-grid-narrow kpi-grid-breakdown">
+        <KpiCard
+          label="4XX errors"
+          value={data ? data.totals.by4xx : '—'}
+          tone={data && data.totals.by4xx > 0 ? 'warn' : 'ok'}
+          footnote="Client-side / bad request"
+        />
+        <KpiCard
+          label="5XX errors"
+          value={data ? data.totals.by5xx : '—'}
+          tone={data && data.totals.by5xx > 0 ? 'bad' : 'ok'}
+          footnote="Server-side / downstream failure"
+        />
+      </div>
+
       <div className="chart-grid">
         <div className="chart-panel">
           <h3>Requests over time</h3>
