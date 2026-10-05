@@ -3,6 +3,28 @@ import KpiCard from './components/KpiCard.jsx';
 import RequestTrendChart from './components/RequestTrendChart.jsx';
 import ResponseTimeChart from './components/ResponseTimeChart.jsx';
 
+// Browser tab icon: a teal pulse line on the Console's dark background.
+// It is set from code so no extra file has to be added to the site.
+const FAVICON_SVG =
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">' +
+  '<rect width="64" height="64" rx="14" fill="#0F1720"/>' +
+  '<polyline points="9,36 21,36 28,18 37,47 43,30 55,30" fill="none" stroke="#5EEAD4" ' +
+  'stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round"/>' +
+  '</svg>';
+
+function setTabIcon() {
+  if (typeof document === 'undefined') return;
+  let link = document.querySelector("link[rel~='icon']");
+  if (!link) {
+    link = document.createElement('link');
+    link.rel = 'icon';
+    document.head.appendChild(link);
+  }
+  link.type = 'image/svg+xml';
+  link.href = 'data:image/svg+xml,' + encodeURIComponent(FAVICON_SVG);
+}
+setTabIcon();
+
 // Point this at your Function App's kpis endpoint.
 const KPI_ENDPOINT = 'https://obs-poc-funcapp-axh3hkgsc5e0dyd0.francecentral-01.azurewebsites.net/api/kpis';
 const POLL_INTERVAL_MS = 20000;
