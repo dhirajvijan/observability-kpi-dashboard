@@ -146,14 +146,17 @@ function buildQuestions(data, windowSize) {
 }
 
 export function AgentPanel({ data, windowSize }) {
-  const [copied, setCopied] = useState(null);
+  const [selected, setSelected] = useState(0);
+  const [copied, setCopied] = useState(false);
 
   if (!data) return null;
 
-  const triage = buildTriage(data);
+  // Small summary: the first three facts only.
+  const triage = buildTriage(data).slice(0, 3);
   const questions = buildQuestions(data, windowSize);
+  const current = questions[Math.min(selected, questions.length - 1)];
 
-  const copy = async (text, index) => {
+  const copy = async (text) => {
     try {
       await navigator.clipboard.writeText(text);
     } catch (e) {
@@ -165,15 +168,14 @@ export function AgentPanel({ data, windowSize }) {
       document.execCommand('copy');
       document.body.removeChild(area);
     }
-    setCopied(index);
-    setTimeout(() => setCopied(null), 2000);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
   };
 
   return (
     <div className="agent-panel">
       <div className="agent-col">
         <h3>What the Console already knows</h3>
-        <p className="chart-sub">Free, from the numbers on this page</p>
         <ul className="agent-triage">
           {triage.map((line, i) => (
             <li key={i}>{line}</li>
@@ -182,29 +184,344 @@ export function AgentPanel({ data, windowSize }) {
       </div>
 
       <div className="agent-col">
-        <h3>Questions for the Observability Agent</h3>
+        <h3>Ask the Observability Agent</h3>
         <p className="chart-sub">Runs only when you ask. Each question is billed.</p>
-        <ul className="agent-questions">
+        <select
+          className="agent-select"
+          value={Math.min(selected, questions.length - 1)}
+          onChange={(e) => { setSelected(Number(e.target.value)); setCopied(false); }}
+        >
           {questions.map((q, i) => (
-            <li key={q.label}>
-              <div className="agent-question-text">
-                <span className="agent-question-label">{q.label}</span>
-                {q.text}
-              </div>
-              <button className="agent-copy" onClick={() => copy(q.text, i)}>
-                {copied === i ? 'Copied' : 'Copy'}
-              </button>
-            </li>
+            <option key={q.label} value={i}>{q.label}</option>
           ))}
-        </ul>
-        <a className="agent-open" href={failuresPageUrl(windowSize)} target="_blank" rel="noopener noreferrer">
-          Open the agent in Azure
-        </a>
-        <p className="agent-hint">
-          Copy a question, open the Failures page, then choose Observability Agent and "Chat with the agent" and
-          paste it. Chat is the cheaper option; a deep investigation costs more.
-        </p>
+        </select>
+        <p className="agent-question-text">{current.text}</p>
+        <div className="agent-actions">
+          <button className="agent-copy" onClick={() => copy(current.text)}>
+            {copied ? 'Copied' : 'Copy question'}
+          </button>
+          <a className="agent-open" href={failuresPageUrl(windowSize)} target="_blank" rel="noopener noreferrer">
+            Open the agent in Azure
+          </a>
+        </div>
       </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Service level objectives
+// Figures come from the slo function, which counts per message (not per
+// delivery attempt) and leaves rejected payloads out of the success target.
+// ---------------------------------------------------------------------------
+// The SLO function kept its default name in Azure, so its address ends in HttpTrigger1.
+const SLO_ENDPOINT = KPI_ENDPOINT.replace(/\/kpis$/, '/HttpTrigger1');
+const SLO_POLL_INTERVAL_MS = 60000;
+const SLO_WINDOWS = [
+  { label: '24h', value: '24h' },
+  { label: '7d', value: '7d' },
+  { label: '28d', value: '28d' },
+];
+
+function sloTone(met) {
+  if (met === null || met === undefined) return 'neutral';
+  return met ? 'ok' : 'bad';
+}
+
+function burnLabel(rate) {
+  if (rate === null || rate === undefined) return { tone: 'neutral', text: 'No traffic' };
+  if (rate >= 14.4) return { tone: 'bad', text: 'Fast burn' };
+  if (rate > 1) return { tone: 'warn', text: 'Above pace' };
+  return { tone: 'ok', text: 'On pace' };
+}
+
+function shortDate(iso) {
+  if (!iso) return '—';
+  return new Date(iso).toLocaleDateString([], { day: 'numeric', month: 'short' });
+}
+
+export function SloSection({ slo, error, sloWindow, onWindowChange, onReport }) {
+  const success = slo && slo.slo.success;
+  const speed = slo && slo.slo.speed;
+  const budget = slo && slo.errorBudget;
+  const burn1h = slo && slo.burnRate.last1h;
+  const burn6h = slo && slo.burnRate.last6h;
+  const burn = burnLabel(burn1h ? burn1h.rate : null);
+  const show = (v, suffix) => (v === null || v === undefined ? '—' : `${v}${suffix || ''}`);
+  const remaining = budget && budget.remainingPct !== null ? budget.remainingPct : null;
+
+  return (
+    <div className="slo-section">
+      <div className="slo-header">
+        <p className="section-label">Service level objectives</p>
+        <button className="report-button" onClick={onReport} disabled={!slo}>
+          Generate report
+        </button>
+        <div className="window-picker">
+          {SLO_WINDOWS.map((w) => (
+            <button
+              key={w.value}
+              className={sloWindow === w.value ? 'active' : ''}
+              onClick={() => onWindowChange(w.value)}
+            >
+              {w.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {error ? <p className="sb-note">SLO data unavailable: {error}</p> : null}
+
+      <div className="slo-grid">
+        <div className="kpi-card">
+          <p className="kpi-label">Success SLO</p>
+          <p className={`kpi-value ${sloTone(success && success.met)}`}>{show(success && success.actualPct, '%')}</p>
+          <p className="kpi-footnote">
+            Target {success ? success.targetPct : 99}%
+            {success ? ` · ${success.good} of ${success.total} valid messages` : ''}
+          </p>
+        </div>
+
+        <div className="kpi-card">
+          <p className="kpi-label">Speed SLO</p>
+          <p className={`kpi-value ${sloTone(speed && speed.met)}`}>{show(speed && speed.actualPct, '%')}</p>
+          <p className="kpi-footnote">
+            Target {speed ? speed.targetPct : 95}% within {speed ? speed.thresholdMs / 1000 : 5}s
+            {speed ? ` · ${speed.good} of ${speed.total} delivered` : ''}
+          </p>
+        </div>
+
+        <div className="kpi-card">
+          <p className="kpi-label">Error budget left</p>
+          <p className={`kpi-value ${remaining === null ? 'neutral' : remaining <= 0 ? 'bad' : remaining < 25 ? 'warn' : 'ok'}`}>
+            {show(remaining, '%')}
+          </p>
+          <div className="slo-bar">
+            <div className="slo-bar-fill" style={{ width: `${remaining === null ? 0 : Math.min(100, remaining)}%` }} />
+          </div>
+          <p className="kpi-footnote">
+            {budget ? `${budget.failures} failed · ${budget.allowedFailures} allowed` : ''}
+          </p>
+        </div>
+
+        <div className="kpi-card">
+          <p className="kpi-label">Burn rate (last hour)</p>
+          <p className={`kpi-value ${burn.tone}`}>{show(burn1h && burn1h.rate, '×')}</p>
+          <p className="kpi-footnote">
+            {burn.text} · last 6h: {show(burn6h && burn6h.rate, '×')}
+          </p>
+        </div>
+      </div>
+
+      {slo ? (
+        <p className="slo-note">
+          Counted per message, not per delivery attempt. {slo.messages.rejected} rejected
+          payload{slo.messages.rejected === 1 ? '' : 's'} left out of the success target.
+          Data from {shortDate(slo.period.dataFrom)} to {shortDate(slo.period.dataTo)}.
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Reliability report: a print-ready page built from the same SLO data.
+// "Print / Save as PDF" uses the browser's own print dialog.
+// ---------------------------------------------------------------------------
+const ERROR_CODE_MEANING = {
+  IDIT_5XX_EXHAUSTED: 'IDIT kept returning a server error after all retries',
+  IDIT_4XX: 'IDIT rejected the payload',
+  SCHEMA_INVALID: 'The message failed validation before it was sent',
+  IDIT_NETWORK_ERROR: 'IDIT could not be reached',
+  UNKNOWN: 'No error code was recorded',
+};
+
+function reportDateTime(iso) {
+  if (!iso) return '—';
+  return new Date(iso).toLocaleString([], { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+function intervalLabel(iso, windowKey) {
+  const d = new Date(iso);
+  const day = d.toLocaleDateString([], { day: 'numeric', month: 'short' });
+  if (windowKey === '28d') return day;
+  return `${day}, ${d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+}
+
+function reportSummary(slo) {
+  const { success, speed } = slo.slo;
+  const lines = [];
+  if (success.met === null) {
+    lines.push('No messages were processed in this period, so the objectives could not be measured.');
+    return lines;
+  }
+  if (success.met && speed.met) lines.push('Both objectives were met in this period.');
+  else if (!success.met && !speed.met) lines.push('Both objectives were missed in this period.');
+  else if (!success.met) lines.push('The success objective was missed in this period. The speed objective was met.');
+  else lines.push('The speed objective was missed in this period. The success objective was met.');
+
+  lines.push(
+    `${success.good} of ${success.total} valid messages were delivered (${success.actualPct}%, target ${success.targetPct}%), ` +
+    `and ${speed.good} of ${speed.total} delivered messages finished within ${speed.thresholdMs / 1000} seconds (${speed.actualPct}%, target ${speed.targetPct}%).`
+  );
+  const b = slo.errorBudget;
+  if (b.remainingPct !== null) {
+    lines.push(
+      b.remainingPct > 0
+        ? `${b.remainingPct}% of the error budget remains: ${b.failures} message${b.failures === 1 ? '' : 's'} failed against an allowance of ${b.allowedFailures}.`
+        : `The error budget is used up: ${b.failures} message${b.failures === 1 ? '' : 's'} failed against an allowance of ${b.allowedFailures}.`
+    );
+  }
+  if (slo.messages.rejected > 0) {
+    lines.push(`${slo.messages.rejected} message${slo.messages.rejected === 1 ? ' was' : 's were'} rejected as invalid. These are reported separately and do not count against the success objective.`);
+  }
+  return lines;
+}
+
+export function SloReport({ slo, onClose }) {
+  const { success, speed } = slo.slo;
+  const budget = slo.errorBudget;
+  const burn1h = slo.burnRate.last1h;
+  const burn6h = slo.burnRate.last6h;
+  const status = (met) => (met === null ? 'No data' : met ? 'Met' : 'Missed');
+  const statusClass = (met) => (met === null ? '' : met ? 'report-ok' : 'report-bad');
+  const rate = (b) => (b.rate === null ? 'no traffic' : `${b.rate}× (${b.failed} failed of ${b.valid} valid)`);
+  const dlq = slo.serviceBus && slo.serviceBus.dlqDepth;
+
+  return (
+    <div className="report">
+      <div className="report-actions">
+        <button onClick={() => window.print()}>Print / Save as PDF</button>
+        <button onClick={onClose}>Back to Console</button>
+      </div>
+
+      <h1>Reliability report</h1>
+      <p className="report-sub">D365 → IDIT pipeline: Service Bus → Function App → Logic App</p>
+      <table className="report-meta">
+        <tbody>
+          <tr><th>Period</th><td>{slo.period.label}</td></tr>
+          <tr><th>Data covers</th><td>{reportDateTime(slo.period.dataFrom)} to {reportDateTime(slo.period.dataTo)}</td></tr>
+          <tr><th>Generated</th><td>{reportDateTime(slo.generatedAt)}</td></tr>
+        </tbody>
+      </table>
+
+      <h2>Summary</h2>
+      {reportSummary(slo).map((line, i) => (
+        <p key={i}>{line}</p>
+      ))}
+
+      <h2>Service level objectives</h2>
+      <table className="report-table">
+        <thead>
+          <tr><th>Objective</th><th>What is measured</th><th>Target</th><th>Actual</th><th>Counts</th><th>Status</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Success</td>
+            <td>{success.description}</td>
+            <td>{success.targetPct}%</td>
+            <td>{success.actualPct === null ? '—' : `${success.actualPct}%`}</td>
+            <td>{success.good} of {success.total}</td>
+            <td className={statusClass(success.met)}>{status(success.met)}</td>
+          </tr>
+          <tr>
+            <td>Speed</td>
+            <td>{speed.description}</td>
+            <td>{speed.targetPct}%</td>
+            <td>{speed.actualPct === null ? '—' : `${speed.actualPct}%`}</td>
+            <td>{speed.good} of {speed.total}</td>
+            <td className={statusClass(speed.met)}>{status(speed.met)}</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2>Error budget</h2>
+      <table className="report-table">
+        <tbody>
+          <tr><th>Failures allowed in this period</th><td>{budget.allowedFailures}</td></tr>
+          <tr><th>Failures recorded</th><td>{budget.failures}</td></tr>
+          <tr><th>Budget used</th><td>{budget.usedPct === null ? '—' : `${budget.usedPct}%`}</td></tr>
+          <tr><th>Budget remaining</th><td>{budget.remainingPct === null ? '—' : `${budget.remainingPct}%`}</td></tr>
+          <tr><th>Burn rate, last hour</th><td>{rate(burn1h)}</td></tr>
+          <tr><th>Burn rate, last 6 hours</th><td>{rate(burn6h)}</td></tr>
+        </tbody>
+      </table>
+      <p className="report-note">
+        A burn rate of 1× spends the budget exactly over the 28-day objective period. Above 1× spends it faster;
+        14.4× or more in one hour is treated as a fast burn that needs immediate attention.
+      </p>
+
+      <h2>Messages</h2>
+      <table className="report-table">
+        <tbody>
+          <tr><th>Messages processed</th><td>{slo.messages.total}</td></tr>
+          <tr><th>Delivered</th><td>{slo.messages.delivered}</td></tr>
+          <tr><th>Failed (counts against the success objective)</th><td>{slo.messages.failed}</td></tr>
+          <tr><th>Rejected as invalid (reported separately)</th><td>{slo.messages.rejected}</td></tr>
+          <tr><th>Delivery attempts, including retries</th><td>{slo.messages.attempts}</td></tr>
+        </tbody>
+      </table>
+
+      <h2>Failures by type</h2>
+      {slo.failureBreakdown.length === 0 ? (
+        <p>No failed or rejected messages in this period.</p>
+      ) : (
+        <table className="report-table">
+          <thead>
+            <tr><th>Outcome</th><th>Error code</th><th>Messages</th><th>Meaning</th></tr>
+          </thead>
+          <tbody>
+            {slo.failureBreakdown.map((f) => (
+              <tr key={`${f.outcome}-${f.errorCode}`}>
+                <td>{f.outcome === 'failed' ? 'Failed' : 'Rejected'}</td>
+                <td>{f.errorCode}</td>
+                <td>{f.messages}</td>
+                <td>{ERROR_CODE_MEANING[f.errorCode] || '—'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      <h2>Timeline</h2>
+      {slo.timeline.length === 0 ? (
+        <p>No messages in this period.</p>
+      ) : (
+        <table className="report-table">
+          <thead>
+            <tr><th>Interval starting</th><th>Delivered</th><th>Failed</th><th>Rejected</th><th>Slower than {speed.thresholdMs / 1000}s</th></tr>
+          </thead>
+          <tbody>
+            {slo.timeline.map((t) => (
+              <tr key={t.time} className={t.failed > 0 ? 'report-row-bad' : ''}>
+                <td>{intervalLabel(t.time, slo.window)}</td>
+                <td>{t.delivered}</td>
+                <td>{t.failed}</td>
+                <td>{t.rejected}</td>
+                <td>{t.slow}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      <h2>Dead-letter queue</h2>
+      <p>
+        {dlq === null || dlq === undefined
+          ? 'The dead-letter count was not available when this report was generated.'
+          : `${Math.round(dlq)} message${Math.round(dlq) === 1 ? ' is' : 's are'} parked in the dead-letter queue at the time of this report.`}
+      </p>
+
+      <h2>How these figures are calculated</h2>
+      <ul>
+        <li>Figures come from the structured logs written by the sync function for every delivery attempt.</li>
+        <li>Each message is counted once, by its correlation ID, however many times it was retried.</li>
+        <li>Delivered: at least one attempt completed. Failed: no attempt completed and the last error was not a rejection. Rejected: no attempt completed and the last error was a rejected or invalid payload.</li>
+        <li>Success = delivered ÷ (delivered + failed). Rejected messages are left out because the sender, not the pipeline, has to fix them.</li>
+        <li>Speed = delivered messages that finished within {speed.thresholdMs / 1000} seconds ÷ all delivered messages.</li>
+        <li>Error budget = the share of valid messages allowed to fail under the success target ({100 - success.targetPct}%).</li>
+        <li>The objectives are defined over 28 days. A shorter period shows the same calculation over less data.</li>
+      </ul>
     </div>
   );
 }
@@ -233,6 +550,40 @@ export default function App() {
     const id = setInterval(() => fetchData(windowSize), POLL_INTERVAL_MS);
     return () => clearInterval(id);
   }, [windowSize, fetchData]);
+
+  const [slo, setSlo] = useState(null);
+  const [sloError, setSloError] = useState(null);
+  const [sloWindow, setSloWindow] = useState('28d');
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const res = await fetch(`${SLO_ENDPOINT}?window=${sloWindow}`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const json = await res.json();
+        if (!cancelled) { setSlo(json); setSloError(null); }
+      } catch (err) {
+        if (!cancelled) setSloError(err.message);
+      }
+    };
+    load();
+    const id = setInterval(load, SLO_POLL_INTERVAL_MS);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [sloWindow]);
+
+  const [showReport, setShowReport] = useState(false);
+
+  // The report is a light page; the Console is dark. Switch the page
+  // background while the report is open.
+  useEffect(() => {
+    document.body.classList.toggle('report-mode', showReport);
+    return () => document.body.classList.remove('report-mode');
+  }, [showReport]);
+
+  if (showReport && slo) {
+    return <SloReport slo={slo} onClose={() => setShowReport(false)} />;
+  }
 
   const status = overallStatus(data);
 
@@ -273,6 +624,15 @@ export default function App() {
         </div>
       </div>
 
+      <SloSection
+        slo={slo}
+        error={sloError}
+        sloWindow={sloWindow}
+        onWindowChange={setSloWindow}
+        onReport={() => setShowReport(true)}
+      />
+
+      <p className="section-label">Live activity</p>
       <div className="kpi-grid">
         <KpiCard
           label="Success rate"
