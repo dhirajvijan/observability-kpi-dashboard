@@ -404,6 +404,46 @@ a { color: var(--teal); }
 .report-button:hover { background: rgba(94,234,212,0.08); }
 .report-button:disabled { opacity: 0.4; cursor: default; }
 
+/* ---- Cost (FinOps) ---- */
+.cost-section { margin-top: 4px; }
+.cost-top { font-size: 20px; line-height: 1.5; }
+
+.cost-panels {
+  display: grid;
+  grid-template-columns: 1fr 1.4fr;
+  gap: 16px;
+  margin-top: 16px;
+}
+
+@media (max-width: 900px) {
+  .cost-panels { grid-template-columns: 1fr; }
+}
+
+.cost-service { margin-top: 14px; padding-bottom: 8px; }
+.cost-service-amount {
+  font-family: var(--font-mono);
+  font-size: 24px;
+  font-weight: 500;
+  margin: 0 0 4px;
+}
+.cost-service .slo-bar { margin-top: 12px; }
+.cost-bar-fill { background: var(--amber); }
+
+.cost-suggestion { margin-top: 14px; padding-bottom: 8px; }
+.cost-suggestion-evidence {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text);
+  line-height: 1.55;
+  margin: 0 0 10px;
+}
+.cost-suggestion-text {
+  font-size: 12.5px;
+  color: var(--text-muted);
+  line-height: 1.6;
+  margin: 0;
+}
+
 /* ---- Reliability report (light, print-ready) ---- */
 body.report-mode { background: #ffffff; }
 
