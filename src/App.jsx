@@ -355,6 +355,126 @@ export function SloSection({ slo, error, sloWindow, onWindowChange, onReport }) 
 }
 
 // ---------------------------------------------------------------------------
+// Cost (FinOps)
+// Month-to-date cost of the resource group and suggestions for reducing it,
+// from the costs function. Azure cost data lags by up to a day.
+// ---------------------------------------------------------------------------
+// Tried in order: the function's intended name first, then the default name
+// Azure gives a second HTTP function if the name box was left unchanged.
+const COST_ENDPOINTS = ['/costs', '/HttpTrigger2'].map((path) => KPI_ENDPOINT.replace(/\/kpis$/, path));
+const COST_POLL_INTERVAL_MS = 30 * 60 * 1000;
+
+function money(amount, currency) {
+  if (amount === null || amount === undefined) return '—';
+  try {
+    return new Intl.NumberFormat(undefined, { style: 'currency', currency: currency || 'EUR', maximumFractionDigits: 2 }).format(amount);
+  } catch (e) {
+    return `${amount} ${currency || ''}`.trim();
+  }
+}
+
+export function CostSection({ costs, error }) {
+  const [selected, setSelected] = useState(0);
+  const [service, setService] = useState(0);
+  if (!costs && !error) return null;
+  const services = costs ? costs.byService : [];
+  const top = services.find((svc) => svc.cost > 0);
+
+  return (
+    <div className="cost-section">
+      <p className="section-label">Cost</p>
+      {error ? <p className="sb-note">Cost data unavailable: {error}</p> : null}
+      {costs ? (
+        <>
+          <div className="slo-grid">
+            <div className="kpi-card">
+              <p className="kpi-label">Month to date</p>
+              <p className="kpi-value neutral">{money(costs.totalCost, costs.currency)}</p>
+              <p className="kpi-footnote">This resource group</p>
+            </div>
+            <div className="kpi-card">
+              <p className="kpi-label">Month-end estimate</p>
+              <p className="kpi-value neutral">{money(costs.forecastMonthEnd, costs.currency)}</p>
+              <p className="kpi-footnote">At the average daily rate so far</p>
+            </div>
+            <div className="kpi-card">
+              <p className="kpi-label">Cost per 1,000 delivered</p>
+              <p className="kpi-value neutral">{money(costs.costPer1000Delivered, costs.currency)}</p>
+              <p className="kpi-footnote">{costs.usage.delivered} messages delivered this month</p>
+            </div>
+            <div className="kpi-card">
+              <p className="kpi-label">Largest cost</p>
+              <p className="kpi-value warn cost-top">{top ? top.service : '—'}</p>
+              <p className="kpi-footnote">{top ? `${top.sharePct}% of spend` : ''}</p>
+            </div>
+          </div>
+
+          <div className="cost-panels">
+            <div className="chart-panel">
+              <h3>Cost by service</h3>
+              <p className="chart-sub">Month to date</p>
+              {services.length === 0 ? (
+                <div className="empty-state">No cost recorded yet this month</div>
+              ) : (
+                <>
+                  <select
+                    className="agent-select"
+                    value={Math.min(service, services.length - 1)}
+                    onChange={(e) => setService(Number(e.target.value))}
+                  >
+                    {services.map((svc, i) => (
+                      <option key={svc.service} value={i}>{svc.service}</option>
+                    ))}
+                  </select>
+                  {(() => {
+                    const svc = services[Math.min(service, services.length - 1)];
+                    return (
+                      <div className="cost-service">
+                        <p className="cost-service-amount">{money(svc.cost, costs.currency)}</p>
+                        <p className="cost-suggestion-text">
+                          {svc.sharePct}% of the {money(costs.totalCost, costs.currency)} spent this month
+                        </p>
+                        <div className="slo-bar">
+                          <div className="slo-bar-fill cost-bar-fill" style={{ width: `${Math.min(100, Math.max(1, svc.sharePct))}%` }} />
+                        </div>
+                      </div>
+                    );
+                  })()}
+                </>
+              )}
+            </div>
+
+            <div className="chart-panel">
+              <h3>Ways to reduce cost</h3>
+              <p className="chart-sub">Worked out from this month's figures. Nothing is changed automatically.</p>
+              <select
+                className="agent-select"
+                value={Math.min(selected, costs.suggestions.length - 1)}
+                onChange={(e) => setSelected(Number(e.target.value))}
+              >
+                {costs.suggestions.map((sug, i) => (
+                  <option key={sug.title} value={i}>{sug.title}</option>
+                ))}
+              </select>
+              {(() => {
+                const sug = costs.suggestions[Math.min(selected, costs.suggestions.length - 1)];
+                return (
+                  <div className="cost-suggestion">
+                    <p className="cost-suggestion-evidence">{sug.evidence}</p>
+                    <p className="cost-suggestion-text">{sug.suggestion}</p>
+                  </div>
+                );
+              })()}
+            </div>
+          </div>
+          <p className="slo-note">{costs.note}</p>
+        </>
+      ) : null}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Reliability report: a print-ready page built from the same SLO data.
 // "Print / Save as PDF" uses the browser's own print dialog.
 // ---------------------------------------------------------------------------
@@ -602,6 +722,32 @@ export default function App() {
     return () => { cancelled = true; clearInterval(id); };
   }, [sloWindow]);
 
+  const [costs, setCosts] = useState(null);
+  const [costsError, setCostsError] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      let lastError = 'not found';
+      for (const url of COST_ENDPOINTS) {
+        try {
+          const res = await fetch(url);
+          if (res.status === 404) { lastError = 'HTTP 404'; continue; }
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const json = await res.json();
+          if (!cancelled) { setCosts(json); setCostsError(null); }
+          return;
+        } catch (err) {
+          lastError = err.message;
+        }
+      }
+      if (!cancelled) setCostsError(lastError);
+    };
+    load();
+    const id = setInterval(load, COST_POLL_INTERVAL_MS);
+    return () => { cancelled = true; clearInterval(id); };
+  }, []);
+
   const [showReport, setShowReport] = useState(false);
 
   // The report is a light page; the Console is dark. Switch the page
@@ -737,6 +883,8 @@ export default function App() {
       {data && data.serviceBus && data.serviceBus.error ? (
         <p className="sb-note">Service Bus metrics unavailable: {data.serviceBus.error}</p>
       ) : null}
+
+      <CostSection costs={costs} error={costsError} />
 
       <p className="section-label">Ask the agent</p>
       <AgentPanel data={data} windowSize={windowSize} />
