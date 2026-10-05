@@ -359,10 +359,10 @@ export function SloSection({ slo, error, sloWindow, onWindowChange, onReport }) 
 // Month-to-date cost of the resource group and suggestions for reducing it,
 // from the costs function. Azure cost data lags by up to a day.
 // ---------------------------------------------------------------------------
-// Tried in order: the function's intended name first, then the default name
-// Azure gives a second HTTP function if the name box was left unchanged.
-const COST_ENDPOINTS = ['/costs', '/HttpTrigger2'].map((path) => KPI_ENDPOINT.replace(/\/kpis$/, path));
-const COST_POLL_INTERVAL_MS = 30 * 60 * 1000;
+const COST_ENDPOINT = KPI_ENDPOINT.replace(/\/kpis$/, '/costs');
+// The costs function keeps its answer for hours and protects Azure's cost
+// service from repeated requests, so asking it every 10 minutes is cheap.
+const COST_POLL_INTERVAL_MS = 10 * 60 * 1000;
 
 function money(amount, currency) {
   if (amount === null || amount === undefined) return '—';
@@ -388,7 +388,7 @@ export function CostSection({ costs, error, onReport }) {
           Generate report
         </button>
       </div>
-      {error ? <p className="sb-note">Cost data unavailable: {error}</p> : null}
+      {error ? <p className="sb-note">{costs ? error : `Cost data unavailable. ${error}`}</p> : null}
       {costs ? (
         <>
           <div className="slo-grid">
@@ -889,20 +889,23 @@ export default function App() {
   useEffect(() => {
     let cancelled = false;
     const load = async () => {
-      let lastError = 'not found';
-      for (const url of COST_ENDPOINTS) {
-        try {
-          const res = await fetch(url);
-          if (res.status === 404) { lastError = 'HTTP 404'; continue; }
-          if (!res.ok) throw new Error(`HTTP ${res.status}`);
-          const json = await res.json();
-          if (!cancelled) { setCosts(json); setCostsError(null); }
-          return;
-        } catch (err) {
-          lastError = err.message;
+      try {
+        const res = await fetch(COST_ENDPOINT);
+        let json = null;
+        try { json = await res.json(); } catch (e) { /* no readable body */ }
+        if (!res.ok) {
+          if (res.status === 503) {
+            const wait = json && json.retryInMinutes;
+            throw new Error(`Azure's cost service is limiting requests. Trying again ${wait ? `in about ${wait} minutes` : 'shortly'}.`);
+          }
+          throw new Error((json && (json.details || json.error)) || `HTTP ${res.status}`);
         }
+        if (cancelled) return;
+        setCosts(json);
+        setCostsError(json.stale ? "Showing the last figures received. Azure's cost service is limiting requests at the moment." : null);
+      } catch (err) {
+        if (!cancelled) setCostsError(err.message);
       }
-      if (!cancelled) setCostsError(lastError);
     };
     load();
     const id = setInterval(load, COST_POLL_INTERVAL_MS);
