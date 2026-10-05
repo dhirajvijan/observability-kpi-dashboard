@@ -605,6 +605,15 @@ export default function App() {
         <div className="error-banner">Couldn't reach the KPI endpoint: {error}</div>
       ) : null}
 
+      <SloSection
+        slo={slo}
+        error={sloError}
+        sloWindow={sloWindow}
+        onWindowChange={setSloWindow}
+        onReport={() => setShowReport(true)}
+      />
+
+      <p className="section-label">Live activity</p>
       <div className="status-strip">
         <span className={`status-dot ${status.tone}`} />
         <span className="status-text">
@@ -624,15 +633,6 @@ export default function App() {
         </div>
       </div>
 
-      <SloSection
-        slo={slo}
-        error={sloError}
-        sloWindow={sloWindow}
-        onWindowChange={setSloWindow}
-        onReport={() => setShowReport(true)}
-      />
-
-      <p className="section-label">Live activity</p>
       <div className="kpi-grid">
         <KpiCard
           label="Success rate"
