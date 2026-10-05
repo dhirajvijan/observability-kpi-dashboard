@@ -373,7 +373,7 @@ function money(amount, currency) {
   }
 }
 
-export function CostSection({ costs, error }) {
+export function CostSection({ costs, error, onReport }) {
   const [selected, setSelected] = useState(0);
   const [service, setService] = useState(0);
   if (!costs && !error) return null;
@@ -382,7 +382,12 @@ export function CostSection({ costs, error }) {
 
   return (
     <div className="cost-section">
-      <p className="section-label">Cost</p>
+      <div className="slo-header">
+        <p className="section-label">Cost</p>
+        <button className="report-button" onClick={onReport} disabled={!costs}>
+          Generate report
+        </button>
+      </div>
       {error ? <p className="sb-note">Cost data unavailable: {error}</p> : null}
       {costs ? (
         <>
@@ -470,6 +475,162 @@ export function CostSection({ costs, error }) {
           <p className="slo-note">{costs.note}</p>
         </>
       ) : null}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Cost report: the FinOps counterpart of the reliability report.
+// ---------------------------------------------------------------------------
+function reportDay(isoDate) {
+  const d = new Date(`${isoDate}T00:00:00Z`);
+  if (Number.isNaN(d.getTime())) return isoDate;
+  return d.toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' });
+}
+
+export function CostReport({ costs, onClose }) {
+  const cur = costs.currency;
+  const services = costs.byService || [];
+  const top = services.find((svc) => svc.cost > 0);
+  const usage = costs.usage || {};
+  const executions = costs.executions || [];
+  const totalRuns = executions.reduce((sum, e) => sum + e.executions, 0);
+  const logs = costs.logs || { total: 0, pipeline: 0 };
+  const daily = costs.daily || [];
+  const today = (costs.generatedAt || '').slice(0, 10);
+  const share = (part, whole) => (whole > 0 ? `${Math.round((part / whole) * 1000) / 10}%` : '—');
+
+  return (
+    <div className="report">
+      <div className="report-actions">
+        <button onClick={() => window.print()}>Print / Save as PDF</button>
+        <button onClick={onClose}>Back to Console</button>
+      </div>
+
+      <h1>Cost report</h1>
+      <p className="report-sub">D365 → IDIT pipeline: Service Bus → Function App → Logic App</p>
+      <table className="report-meta">
+        <tbody>
+          <tr><th>Period</th><td>{costs.period}</td></tr>
+          <tr><th>Covers</th><td>{(costs.scope || '').split('/resourceGroups/')[1] ? `Resource group ${(costs.scope || '').split('/resourceGroups/')[1]}` : costs.scope}</td></tr>
+          <tr><th>Generated</th><td>{reportDateTime(costs.generatedAt)}</td></tr>
+        </tbody>
+      </table>
+
+      <h2>Summary</h2>
+      <p>
+        {money(costs.totalCost, cur)} has been spent so far this month. At the average daily rate, the month is
+        estimated to end at {money(costs.forecastMonthEnd, cur)}.
+      </p>
+      {top ? (
+        <p>{top.service} is the largest cost at {money(top.cost, cur)}, which is {top.sharePct}% of the total.</p>
+      ) : null}
+      {costs.costPer1000Delivered !== null && costs.costPer1000Delivered !== undefined ? (
+        <p>
+          {usage.delivered} messages were delivered, which works out at {money(costs.costPer1000Delivered, cur)} per
+          1,000 delivered messages.
+        </p>
+      ) : null}
+
+      <h2>Cost by service</h2>
+      <table className="report-table">
+        <thead>
+          <tr><th>Service</th><th>Cost</th><th>Share of total</th></tr>
+        </thead>
+        <tbody>
+          {services.map((svc) => (
+            <tr key={svc.service}>
+              <td>{svc.service}</td>
+              <td>{money(svc.cost, cur)}</td>
+              <td>{svc.sharePct}%</td>
+            </tr>
+          ))}
+          <tr>
+            <th>Total</th>
+            <td><strong>{money(costs.totalCost, cur)}</strong></td>
+            <td>100%</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2>Cost by day</h2>
+      {daily.length === 0 ? (
+        <p>No daily figures are available yet.</p>
+      ) : (
+        <table className="report-table">
+          <thead>
+            <tr><th>Day</th><th>Cost</th></tr>
+          </thead>
+          <tbody>
+            {daily.map((d) => (
+              <tr key={d.date}>
+                <td>{reportDay(d.date)}{d.date === today ? ' (so far)' : ''}</td>
+                <td>{money(d.cost, cur)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      <h2>What the cost paid for</h2>
+      <table className="report-table">
+        <tbody>
+          <tr><th>Messages processed</th><td>{usage.messages}</td></tr>
+          <tr><th>Messages delivered</th><td>{usage.delivered}</td></tr>
+          <tr><th>From the traffic generator</th><td>{usage.synthetic} ({share(usage.synthetic, usage.messages)})</td></tr>
+          <tr><th>Delivery attempts, including retries</th><td>{usage.attempts}</td></tr>
+          <tr><th>Function runs, all functions</th><td>{totalRuns}</td></tr>
+          <tr><th>Log lines stored</th><td>{logs.total}</td></tr>
+          <tr><th>Log lines that are pipeline events</th><td>{logs.pipeline} ({share(logs.pipeline, logs.total)})</td></tr>
+        </tbody>
+      </table>
+
+      {executions.length > 0 ? (
+        <>
+          <h2>Function runs</h2>
+          <table className="report-table">
+            <thead>
+              <tr><th>Function</th><th>Runs</th><th>Share</th></tr>
+            </thead>
+            <tbody>
+              {executions.map((e) => (
+                <tr key={e.name}>
+                  <td>{e.name}</td>
+                  <td>{e.executions}</td>
+                  <td>{share(e.executions, totalRuns)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </>
+      ) : null}
+
+      <h2>Ways to reduce cost</h2>
+      <table className="report-table">
+        <thead>
+          <tr><th>Finding</th><th>Evidence</th><th>What to do</th></tr>
+        </thead>
+        <tbody>
+          {costs.suggestions.map((sug) => (
+            <tr key={sug.title}>
+              <td>{sug.title}</td>
+              <td>{sug.evidence}</td>
+              <td>{sug.suggestion}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <p className="report-note">These are suggestions only. Nothing in the pipeline has been changed.</p>
+
+      <h2>How these figures are calculated</h2>
+      <ul>
+        <li>Costs come from Azure Cost Management for the resource group, month to date, as actual cost.</li>
+        <li>Azure cost data lags by up to a day, so the most recent day is incomplete.</li>
+        <li>The month-end estimate is the cost of complete days so far, plus the average complete day for each day remaining.</li>
+        <li>Cost per 1,000 delivered = total cost ÷ messages delivered × 1,000. Messages are counted once each, by correlation ID.</li>
+        <li>Usage figures (messages, function runs, log lines) come from Application Insights for the same month.</li>
+        <li>Charges that Azure posts late, or fixed monthly charges not yet shown, are not included until they appear in Cost Management.</li>
+      </ul>
     </div>
   );
 }
@@ -748,17 +909,20 @@ export default function App() {
     return () => { cancelled = true; clearInterval(id); };
   }, []);
 
-  const [showReport, setShowReport] = useState(false);
+  const [report, setReport] = useState(null); // null | 'slo' | 'cost'
 
   // The report is a light page; the Console is dark. Switch the page
   // background while the report is open.
   useEffect(() => {
-    document.body.classList.toggle('report-mode', showReport);
+    document.body.classList.toggle('report-mode', report !== null);
     return () => document.body.classList.remove('report-mode');
-  }, [showReport]);
+  }, [report]);
 
-  if (showReport && slo) {
-    return <SloReport slo={slo} onClose={() => setShowReport(false)} />;
+  if (report === 'slo' && slo) {
+    return <SloReport slo={slo} onClose={() => setReport(null)} />;
+  }
+  if (report === 'cost' && costs) {
+    return <CostReport costs={costs} onClose={() => setReport(null)} />;
   }
 
   const status = overallStatus(data);
@@ -786,7 +950,7 @@ export default function App() {
         error={sloError}
         sloWindow={sloWindow}
         onWindowChange={setSloWindow}
-        onReport={() => setShowReport(true)}
+        onReport={() => setReport('slo')}
       />
 
       <p className="section-label">Live activity</p>
@@ -884,7 +1048,7 @@ export default function App() {
         <p className="sb-note">Service Bus metrics unavailable: {data.serviceBus.error}</p>
       ) : null}
 
-      <CostSection costs={costs} error={costsError} />
+      <CostSection costs={costs} error={costsError} onReport={() => setReport('cost')} />
 
       <p className="section-label">Ask the agent</p>
       <AgentPanel data={data} windowSize={windowSize} />
