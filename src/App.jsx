@@ -19,12 +19,20 @@ function toneForFailureRate(pct) {
   return 'ok';
 }
 
-function overallStatus(data) {
+// Status of the live traffic in the selected window.
+//   red    10% or more of attempts failed
+//   amber  3% or more failed, or messages are waiting in the dead-letter queue
+//   green  otherwise
+// Dead-lettered messages are a backlog to review, not an outage, so they
+// never turn the status red on their own.
+export function overallStatus(data) {
   if (!data) return { tone: 'neutral', label: 'Connecting…' };
   const failTone = toneForFailureRate(data.failureRatePct);
-  const dlqTone = data.serviceBus && data.serviceBus.dlqDepth > 0 ? 'bad' : 'ok';
-  if (failTone === 'bad' || dlqTone === 'bad') return { tone: 'bad', label: 'Degraded' };
-  if (failTone === 'warn') return { tone: 'warn', label: 'Elevated failures' };
+  const dlq = data.serviceBus && data.serviceBus.dlqDepth > 0 ? Math.round(data.serviceBus.dlqDepth) : 0;
+  const dlqText = `${dlq} message${dlq === 1 ? '' : 's'} in dead-letter queue`;
+  if (failTone === 'bad') return { tone: 'bad', label: 'Degraded' };
+  if (failTone === 'warn') return { tone: 'warn', label: dlq > 0 ? `Elevated failures · ${dlqText}` : 'Elevated failures' };
+  if (dlq > 0) return { tone: 'warn', label: dlqText };
   return { tone: 'ok', label: 'All systems healthy' };
 }
 
