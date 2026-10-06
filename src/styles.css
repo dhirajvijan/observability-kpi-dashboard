@@ -404,6 +404,44 @@ a { color: var(--teal); }
 .report-button:hover { background: rgba(94,234,212,0.08); }
 .report-button:disabled { opacity: 0.4; cursor: default; }
 
+/* ---- Configuration check ---- */
+.config-section { margin-top: 4px; margin-bottom: 8px; }
+.config-grid { grid-template-columns: repeat(3, 1fr); }
+
+@media (max-width: 900px) {
+  .config-grid { grid-template-columns: 1fr; }
+}
+
+.config-card { cursor: pointer; }
+.config-card:hover { border-color: var(--text-muted); }
+.config-card.active { border-color: var(--teal); }
+
+.config-panel { margin-top: 16px; padding-bottom: 18px; }
+.config-selects {
+  display: grid;
+  grid-template-columns: 1fr 2fr;
+  gap: 12px;
+}
+
+@media (max-width: 700px) {
+  .config-selects { grid-template-columns: 1fr; }
+}
+
+.config-detail { margin-top: 16px; }
+.config-status {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  padding: 3px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+}
+.config-status.pass { color: var(--teal); border-color: var(--teal); }
+.config-status.warn, .config-status.unknown { color: var(--amber); border-color: var(--amber); }
+.config-status.fail { color: var(--red); border-color: var(--red); }
+.config-detail-text { font-size: 13.5px; line-height: 1.6; margin: 10px 0 8px; }
+
 /* ---- Cost (FinOps) ---- */
 .cost-section { margin-top: 4px; }
 .cost-top { font-size: 20px; line-height: 1.5; }
@@ -486,6 +524,7 @@ body.report-mode { background: #ffffff; }
 .report-ok { color: #0b7a5c; font-weight: 600; }
 .report-bad { color: #c22f34; font-weight: 600; }
 .report-row-bad td { background: #fdecec; }
+.report-warn { color: #9a6200; font-weight: 600; }
 
 .report-actions { display: flex; gap: 10px; }
 .report-actions button {
