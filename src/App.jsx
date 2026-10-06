@@ -355,6 +355,197 @@ export function SloSection({ slo, error, sloWindow, onWindowChange, onReport }) 
 }
 
 // ---------------------------------------------------------------------------
+// Configuration check
+// A read-only sanity check of the Azure configuration, from the configcheck
+// function, in three areas: service tier, settings and identity, networking
+// and bindings. Setting values and keys are never returned or shown.
+// ---------------------------------------------------------------------------
+const CONFIG_ENDPOINT = KPI_ENDPOINT.replace(/\/kpis$/, '/configcheck');
+const CONFIG_POLL_INTERVAL_MS = 10 * 60 * 1000;
+const CHECK_STATUS = { fail: 'Failing', warn: 'Warning', unknown: 'Not checked', pass: 'Passed', info: 'Information' };
+
+function areaTone(counts) {
+  if (counts.fail > 0) return 'bad';
+  if (counts.warn > 0 || counts.unknown > 0) return 'warn';
+  return 'ok';
+}
+
+function areaFootnote(counts) {
+  const parts = [];
+  if (counts.fail > 0) parts.push(`${counts.fail} failing`);
+  if (counts.warn > 0) parts.push(`${counts.warn} warning${counts.warn === 1 ? '' : 's'}`);
+  if (counts.unknown > 0) parts.push(`${counts.unknown} not checked`);
+  parts.push(`${counts.info} for information`);
+  return parts.join(' · ');
+}
+
+export function ConfigSection({ config, error, onReport }) {
+  const [area, setArea] = useState(0);
+  const [item, setItem] = useState(0);
+  if (!config && !error) return null;
+
+  const groups = config ? config.groups : [];
+  const group = groups[Math.min(area, Math.max(0, groups.length - 1))];
+  const checks = group ? group.checks : [];
+  const current = checks[Math.min(item, Math.max(0, checks.length - 1))];
+  const chooseArea = (i) => { setArea(i); setItem(0); };
+
+  return (
+    <div className="config-section">
+      <div className="slo-header">
+        <p className="section-label">Configuration check</p>
+        <button className="report-button" onClick={onReport} disabled={!config}>
+          Generate report
+        </button>
+      </div>
+      {error ? <p className="sb-note">{config ? error : `Configuration check unavailable. ${error}`}</p> : null}
+      {config ? (
+        <>
+          <div className="slo-grid config-grid">
+            {groups.map((g, i) => {
+              const judged = g.counts.pass + g.counts.warn + g.counts.fail + g.counts.unknown;
+              return (
+                <div
+                  key={g.id}
+                  className={`kpi-card config-card${i === area ? ' active' : ''}`}
+                  onClick={() => chooseArea(i)}
+                >
+                  <p className="kpi-label">{g.title}</p>
+                  <p className={`kpi-value ${areaTone(g.counts)}`}>{g.counts.pass} of {judged}</p>
+                  <p className="kpi-footnote">checks passed · {areaFootnote(g.counts)}</p>
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="chart-panel config-panel">
+            <div className="config-selects">
+              <select className="agent-select" value={Math.min(area, groups.length - 1)} onChange={(e) => chooseArea(Number(e.target.value))}>
+                {groups.map((g, i) => (
+                  <option key={g.id} value={i}>{g.title}</option>
+                ))}
+              </select>
+              <select className="agent-select" value={Math.min(item, Math.max(0, checks.length - 1))} onChange={(e) => setItem(Number(e.target.value))}>
+                {checks.map((c, i) => (
+                  <option key={c.name} value={i}>{CHECK_STATUS[c.status]} · {c.name}</option>
+                ))}
+              </select>
+            </div>
+            {current ? (
+              <div className="config-detail">
+                <span className={`config-status ${current.status}`}>{CHECK_STATUS[current.status]}</span>
+                <p className="config-detail-text">{current.detail}</p>
+                {current.action ? <p className="cost-suggestion-text">What to do: {current.action}</p> : null}
+              </div>
+            ) : null}
+          </div>
+          <p className="slo-note">{config.note}</p>
+        </>
+      ) : null}
+    </div>
+  );
+}
+
+// Configuration report: every check in every area, plus the resources found.
+export function ConfigReport({ config, onClose }) {
+  const s = config.summary;
+  const judged = s.pass + s.warn + s.fail + s.unknown;
+  const cls = { fail: 'report-bad', warn: 'report-warn', unknown: 'report-warn', pass: 'report-ok', info: '' };
+  const rg = (config.scope || '').split('/resourceGroups/')[1];
+
+  return (
+    <div className="report">
+      <div className="report-actions">
+        <button onClick={() => window.print()}>Print / Save as PDF</button>
+        <button onClick={onClose}>Back to Console</button>
+      </div>
+
+      <h1>Configuration report</h1>
+      <p className="report-sub">D365 → IDIT pipeline: Service Bus → Function App → Logic App</p>
+      <table className="report-meta">
+        <tbody>
+          <tr><th>Covers</th><td>{rg ? `Resource group ${rg}` : config.scope}</td></tr>
+          <tr><th>Generated</th><td>{reportDateTime(config.generatedAt)}</td></tr>
+        </tbody>
+      </table>
+
+      <h2>Summary</h2>
+      <p>
+        {s.pass} of {judged} checks passed.{' '}
+        {s.fail > 0 ? `${s.fail} ${s.fail === 1 ? 'is' : 'are'} failing. ` : 'None are failing. '}
+        {s.warn > 0 ? `${s.warn} ${s.warn === 1 ? 'is a warning' : 'are warnings'}. ` : ''}
+        {s.unknown > 0 ? `${s.unknown} could not be checked. ` : ''}
+        A further {s.info} items are recorded for information.
+      </p>
+      <table className="report-table">
+        <thead>
+          <tr><th>Area</th><th>Passed</th><th>Failing</th><th>Warnings</th><th>Not checked</th><th>Information</th></tr>
+        </thead>
+        <tbody>
+          {config.groups.map((g) => (
+            <tr key={g.id}>
+              <td>{g.title}</td>
+              <td>{g.counts.pass}</td>
+              <td className={g.counts.fail > 0 ? 'report-bad' : ''}>{g.counts.fail}</td>
+              <td className={g.counts.warn > 0 ? 'report-warn' : ''}>{g.counts.warn}</td>
+              <td>{g.counts.unknown}</td>
+              <td>{g.counts.info}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      {config.groups.map((g) => (
+        <div key={g.id}>
+          <h2>{g.title}</h2>
+          <table className="report-table">
+            <thead>
+              <tr><th>Check</th><th>Status</th><th>Finding</th><th>What to do</th></tr>
+            </thead>
+            <tbody>
+              {g.checks.map((c) => (
+                <tr key={c.name} className={c.status === 'fail' ? 'report-row-bad' : ''}>
+                  <td>{c.name}</td>
+                  <td className={cls[c.status]}>{CHECK_STATUS[c.status]}</td>
+                  <td>{c.detail}</td>
+                  <td>{c.action || ''}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ))}
+
+      <h2>Resources found</h2>
+      <table className="report-table">
+        <thead>
+          <tr><th>Name</th><th>Type</th><th>Region</th><th>Tier</th></tr>
+        </thead>
+        <tbody>
+          {(config.resources || []).map((r, i) => (
+            <tr key={`${r.name}-${i}`}>
+              <td>{r.name}</td>
+              <td>{r.type}</td>
+              <td>{r.location}</td>
+              <td>{r.tier || '—'}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      <h2>How this check works</h2>
+      <ul>
+        <li>The configuration of each resource is read from Azure Resource Manager with the Function App's managed identity, which holds the Reader role on the resource group.</li>
+        <li>The check is read-only. It changes nothing, and it never returns or shows setting values or keys.</li>
+        <li>Passed, warning and failing compare a setting with what this pipeline expects. Information items record a setting without judging it.</li>
+        <li>A warning is acceptable for a proof of concept but would need attention in a real system.</li>
+        <li>Results are reused for 10 minutes.</li>
+      </ul>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Cost (FinOps)
 // Month-to-date cost of the resource group and suggestions for reducing it,
 // from the costs function. Azure cost data lags by up to a day.
@@ -912,7 +1103,28 @@ export default function App() {
     return () => { cancelled = true; clearInterval(id); };
   }, []);
 
-  const [report, setReport] = useState(null); // null | 'slo' | 'cost'
+  const [config, setConfig] = useState(null);
+  const [configError, setConfigError] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const res = await fetch(CONFIG_ENDPOINT);
+        let json = null;
+        try { json = await res.json(); } catch (e) { /* no readable body */ }
+        if (!res.ok) throw new Error((json && (json.details || json.error)) || `HTTP ${res.status}`);
+        if (!cancelled) { setConfig(json); setConfigError(null); }
+      } catch (err) {
+        if (!cancelled) setConfigError(err.message);
+      }
+    };
+    load();
+    const id = setInterval(load, CONFIG_POLL_INTERVAL_MS);
+    return () => { cancelled = true; clearInterval(id); };
+  }, []);
+
+  const [report, setReport] = useState(null); // null | 'slo' | 'cost' | 'config'
 
   // The report is a light page; the Console is dark. Switch the page
   // background while the report is open.
@@ -926,6 +1138,9 @@ export default function App() {
   }
   if (report === 'cost' && costs) {
     return <CostReport costs={costs} onClose={() => setReport(null)} />;
+  }
+  if (report === 'config' && config) {
+    return <ConfigReport config={config} onClose={() => setReport(null)} />;
   }
 
   const status = overallStatus(data);
@@ -946,6 +1161,13 @@ export default function App() {
 
       {error ? (
         <div className="error-banner">Couldn't reach the KPI endpoint: {error}</div>
+      ) : null}
+
+      {config && config.summary.fail > 0 ? (
+        <div className="error-banner">
+          Configuration: {config.summary.fail} check{config.summary.fail === 1 ? '' : 's'} failing. See the
+          Configuration check section below.
+        </div>
       ) : null}
 
       <SloSection
@@ -1050,6 +1272,8 @@ export default function App() {
       {data && data.serviceBus && data.serviceBus.error ? (
         <p className="sb-note">Service Bus metrics unavailable: {data.serviceBus.error}</p>
       ) : null}
+
+      <ConfigSection config={config} error={configError} onReport={() => setReport('config')} />
 
       <CostSection costs={costs} error={costsError} onReport={() => setReport('cost')} />
 
