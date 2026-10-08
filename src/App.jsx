@@ -354,6 +354,25 @@ export function SloSection({ slo, error, sloWindow, onWindowChange, onReport }) 
   );
 }
 
+// "Calculated Thu 8 Oct, 17:02 · next calculation after Fri 9 Oct, 17:02"
+function whenText(iso) {
+  if (!iso) return '—';
+  return new Date(iso).toLocaleString([], { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+}
+
+export function ScheduleNote({ doneLabel, nextLabel, doneAt, nextAt, stale, warning }) {
+  const due = stale || (nextAt && new Date(nextAt).getTime() <= Date.now());
+  let next = '';
+  if (due) next = ` · ${nextLabel} is due and will be tried again shortly`;
+  else if (nextAt) next = ` · ${nextLabel} after ${whenText(nextAt)}`;
+  return (
+    <p className="slo-note">
+      {doneLabel} {whenText(doneAt)}{next}
+      {warning ? ` · ${warning}` : ''}
+    </p>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Configuration check
 // A read-only sanity check of the Azure configuration, from the configcheck
@@ -361,7 +380,9 @@ export function SloSection({ slo, error, sloWindow, onWindowChange, onReport }) 
 // and bindings. Setting values and keys are never returned or shown.
 // ---------------------------------------------------------------------------
 const CONFIG_ENDPOINT = KPI_ENDPOINT.replace(/\/kpis$/, '/configcheck');
-const CONFIG_POLL_INTERVAL_MS = 10 * 60 * 1000;
+// The check itself runs once a week inside the function. The Console asks
+// once an hour, which only reads the saved result.
+const CONFIG_POLL_INTERVAL_MS = 60 * 60 * 1000;
 const CHECK_STATUS = { fail: 'Failing', warn: 'Warning', unknown: 'Not checked', pass: 'Passed', info: 'Information' };
 
 function areaTone(counts) {
@@ -439,6 +460,7 @@ export function ConfigSection({ config, error, onReport }) {
               </div>
             ) : null}
           </div>
+          <ScheduleNote doneLabel="Last checked" nextLabel="next check" doneAt={config.generatedAt} nextAt={config.nextCheckAt} stale={config.stale} warning={config.storageWarning} />
           <p className="slo-note">{config.note}</p>
         </>
       ) : null}
@@ -465,7 +487,7 @@ export function ConfigReport({ config, onClose }) {
       <table className="report-meta">
         <tbody>
           <tr><th>Covers</th><td>{rg ? `Resource group ${rg}` : config.scope}</td></tr>
-          <tr><th>Generated</th><td>{reportDateTime(config.generatedAt)}</td></tr>
+          <tr><th>Checked</th><td>{reportDateTime(config.generatedAt)}</td></tr>
         </tbody>
       </table>
 
@@ -539,7 +561,7 @@ export function ConfigReport({ config, onClose }) {
         <li>The check is read-only. It changes nothing, and it never returns or shows setting values or keys.</li>
         <li>Passed, warning and failing compare a setting with what this pipeline expects. Information items record a setting without judging it.</li>
         <li>A warning is acceptable for a proof of concept but would need attention in a real system.</li>
-        <li>Results are reused for 10 minutes.</li>
+        <li>The check runs once a week. The result is saved and shown until the next run. A run in which something could not be checked is repeated after an hour.</li>
       </ul>
     </div>
   );
@@ -551,9 +573,9 @@ export function ConfigReport({ config, onClose }) {
 // from the costs function. Azure cost data lags by up to a day.
 // ---------------------------------------------------------------------------
 const COST_ENDPOINT = KPI_ENDPOINT.replace(/\/kpis$/, '/costs');
-// The costs function keeps its answer for hours and protects Azure's cost
-// service from repeated requests, so asking it every 10 minutes is cheap.
-const COST_POLL_INTERVAL_MS = 10 * 60 * 1000;
+// Costs are calculated once a day inside the function. The Console asks
+// once an hour, which only reads the saved result.
+const COST_POLL_INTERVAL_MS = 60 * 60 * 1000;
 
 function money(amount, currency) {
   if (amount === null || amount === undefined) return '—';
@@ -663,6 +685,7 @@ export function CostSection({ costs, error, onReport }) {
               })()}
             </div>
           </div>
+          <ScheduleNote doneLabel="Calculated" nextLabel="next calculation" doneAt={costs.generatedAt} nextAt={costs.nextCalculationAt} stale={costs.stale} warning={costs.storageWarning} />
           <p className="slo-note">{costs.note}</p>
         </>
       ) : null}
@@ -704,7 +727,7 @@ export function CostReport({ costs, onClose }) {
         <tbody>
           <tr><th>Period</th><td>{costs.period}</td></tr>
           <tr><th>Covers</th><td>{(costs.scope || '').split('/resourceGroups/')[1] ? `Resource group ${(costs.scope || '').split('/resourceGroups/')[1]}` : costs.scope}</td></tr>
-          <tr><th>Generated</th><td>{reportDateTime(costs.generatedAt)}</td></tr>
+          <tr><th>Calculated</th><td>{reportDateTime(costs.generatedAt)}</td></tr>
         </tbody>
       </table>
 
@@ -816,6 +839,7 @@ export function CostReport({ costs, onClose }) {
       <h2>How these figures are calculated</h2>
       <ul>
         <li>Costs come from Azure Cost Management for the resource group, month to date, as actual cost.</li>
+        <li>Costs are calculated once a day. This report shows the most recent calculation.</li>
         <li>Azure cost data lags by up to a day, so the most recent day is incomplete.</li>
         <li>The month-end estimate is the cost of complete days so far, plus the average complete day for each day remaining.</li>
         <li>Cost per 1,000 delivered = total cost ÷ messages delivered × 1,000. Messages are counted once each, by correlation ID.</li>
@@ -1093,7 +1117,7 @@ export default function App() {
         }
         if (cancelled) return;
         setCosts(json);
-        setCostsError(json.stale ? "Showing the last figures received. Azure's cost service is limiting requests at the moment." : null);
+        setCostsError(json.stale ? "Showing the last saved figures. Today's calculation was refused by Azure's cost service and will be tried again." : null);
       } catch (err) {
         if (!cancelled) setCostsError(err.message);
       }
